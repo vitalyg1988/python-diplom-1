@@ -2,26 +2,11 @@
 import json
 import os
 import requests
+import inspect
 from time import sleep
-import sys
-import logging.config
-
-
-def get_path(item_name=''):
-    return os.path.join(os.path.abspath(os.path.dirname(__file__)), item_name)
 
 
 token = '73eaea320bdc0d3299faa475c196cfea1c4df9da4c6d291633f9fe8f83c08c4de2a3abf89fbc3ed8a44e1'
-
-logger = logging.getLogger('errorLog')
-
-
-def log_conf():
-    with open(get_path('conf.json')) as f:
-        return json.load(f)
-
-
-logging.config.dictConfig(log_conf())
 
 
 def get_user_input():
@@ -34,140 +19,112 @@ class UserVk:
     TOKEN = token
     error_user = []
 
-    @staticmethod
-    def response_param():
-        return dict(v='5.92', access_token=UserVk.TOKEN)
-
-    @staticmethod
-    def error_handler(resp, par, met):
-        if 'error' in resp:
-            logger.error(f'{resp["error"]["error_code"]}: {resp["error"]["error_msg"]}')
-            if resp["error"]["error_code"] == 6:
-                sleep(2)
-                resp = UserVk.get_response(par, met)
-        return resp
+    def response_param(self, id, share):
+        return dict(v='5.92', access_token=UserVk.TOKEN, user_id=id, extended=share)
 
     def __init__(self, user_id):
         self.user_id = user_id
-
-    @staticmethod
-    def get_response(param, method):
-        return requests.post(f'https://api.vk.com/method/{method}', param).json()
-
-    def get_user_id(self):
-        param = UserVk.response_param()
-        param['user_ids'] = self.user_id
-        method = 'users.get'
-        response = UserVk.get_response(param, method)
-        response = UserVk.error_handler(response, param, method)
-        return response['response'][0]['id']
+        self.dirname = os.path.dirname(os.path.abspath(inspect.stack()[0][1]))
 
     def get_friends_list(self):
-        if type(self.user_id) is str:
-            self.user_id = self.get_user_id()
-        param = UserVk.response_param()
-        param['user_id'] = self.user_id
-        method = 'friends.get'
-        response = UserVk.get_response(param, method)['response']
-        response = UserVk.error_handler(response, param, method)
-        return list(map(UserVk, response['items']))
+        params = self.response_param(self.user_id, 0)
+        response = requests.get(
+            'https://api.vk.com/method/friends.get',
+            params)
+        return response.json()
 
-    def get_groups(self):
-        if type(self.user_id) is str:
-            self.user_id = self.get_user_id()
-        param = UserVk.response_param()
-        param['user_id'] = self.user_id
-        method = 'groups.get'
-        response = UserVk.get_response(param, method)
-        response = UserVk.error_handler(response, param, method)
-        try:
-            return response['response']['items']
-        except KeyError:
-            return []
+    def user_groups(self, id_num):
+        params = self.response_param(id_num, 0)
+        response = requests.get(
+            'https://api.vk.com/method/groups.get',
+            params)
+        return response.json()
 
-    def __repr__(self):
-        return f'{self.user_id}'
+    def summary_groups(self):
+        rez_user = self.get_friends_list()
+        friends = self.transform_friends(rez_user)
+        groups_dict = set()
+        for k, id_num in enumerate(friends):
+            print(f'Обрабатываем {k} из {len(friends)}')
+            json_data = self.user_groups(id_num)
+            try:
+                for i in range(len(json_data['response']['items'])):
+                    rez = json_data['response']['items'][i]
+                    groups_dict.add(rez)
+            except KeyError:
+                self.error_user.append(id_num)
+                sleep(0.5)
+        return groups_dict
 
-    user_groups = property(get_groups)
-    user_friends = property(get_friends_list)
+    def compare_groups(self):
+        friend_groups = self.summary_groups()
+        sleep(.5)
+        rez_my_groups = self.user_groups(self.user_id)
+        my_groups = self.transform_friends(rez_my_groups)
+        total = set(my_groups).difference(set(friend_groups))
+        return total
 
-    def get_description_group(self):
-        param = UserVk.response_param()
-        param['group_id'] = self.user_id
-        method = 'groups.getById'
-        response = UserVk.get_response(param, method)
-        response = UserVk.error_handler(response, param, method)
-        return {'name': response['response'][0]['name'],
-                'id': response['response'][0]['id'],
-                'members_count': response['response'][0]['members_count']}
+    def get_description_group(self, id_group):
+        params_group = {
+            'v': '5.92',
+            'access_token': UserVk.TOKEN,
+            'group_id': id_group,
+            'fields': 'members_count,name,id'
+        }
+        response = requests.get(
+            'https://api.vk.com/method/groups.getById',
+            params_group)
+        sleep(.5)
+        return response.json()
 
-    def check_membership(self, verifiable_friends):
-        param = UserVk.response_param()
-        param['user_ids'] = f'{verifiable_friends}'
-        param['group_id'] = self.user_id
-        param['extended'] = '1'
-        method = 'groups.isMember'
-        response = UserVk.get_response(param, method)
-        response = UserVk.error_handler(response, param, method)
-        return [member for member in response['response']]
+    def info_groups_rez(self):
+        list_groups = self.compare_groups()
+        list_rez_info = []
+        for id_group in list_groups:
+            json_data = self.get_description_group(id_group)
+            dict_rez = {}
+            for i in range(len(json_data['response'])):
+                for key, value in json_data['response'][i].items():
+                    if key == 'id':
+                        dict_rez[key] = value
+                    if key == 'name':
+                        dict_rez[key] = value
+                    if key == 'members_count':
+                        dict_rez[key] = value
+            list_rez_info.append(dict_rez)
+            sleep(.5)
+        filename = self.convert_to_json(list_rez_info)
+        return filename
 
-    @staticmethod
-    def generation_list(gen_list, offset):
-        start_index = 0
-        end_index = offset
-        while end_index <= len(gen_list):
-            temp_list = []
-            temp_list += gen_list[start_index: end_index]
-            start_index = end_index
-            end_index += 500
-            yield temp_list
-        if end_index > len(gen_list):
-            temp_list = []
-            temp_list += gen_list[start_index: len(gen_list)]
-            yield temp_list
+    def convert_to_json(self, list_json):
+        data = json.dumps(list_json).encode('utf8')
+        json_data = json.loads(data)
+        with open('groups.json', 'w', encoding='utf8') as outfile:
+            json.dump(json_data, outfile, sort_keys=True, indent=4, ensure_ascii=False)
+        filename = os.path.join(self.dirname, 'groups.json')
+        return filename
 
-    @staticmethod
-    def count_members(list_groups):
-        temp_dict = {}
-        for group in list_groups:
-            temp_dict.setdefault(group, 0)
-        return temp_dict
+    def transform_friends(self, json_data):
+        friends_dict = set()
+        for i in range(len(json_data['response']['items'])):
+            string = json_data['response']['items'][i]
+            friends_dict.add(string)
+        return friends_dict
 
-    def counting_friends(self):
-        current_user_groups = UserVk.count_members(list(map(UserVk, self.user_groups)))
-        friends = self.user_friends
-        for index, group in enumerate(current_user_groups):
-            for friends_list in UserVk.generation_list(friends, 500):
-                for friend in group.check_membership(friends_list):
-                    if friend['member'] == 1:
-                        current_user_groups[group] += 1
-            sys.stdout.write('\r')
-            sys.stdout.write(f'Обработано групп {index + 1} из {len(current_user_groups)}')
-            sys.stdout.flush()
-        print('\n')
-        return current_user_groups
-
-    @staticmethod
-    def filter_groups(dict_groups, number):
-        temp_list = []
-        for group in dict_groups:
-            if dict_groups[group] == number:
-                temp_list.append(group)
-        return temp_list
-
-    @staticmethod
-    def create_dict_groups(list_of_id):
-        temp_list = []
-        for id_group in list_of_id:
-            temp_list.append(id_group.get_description_group())
-        return temp_list
+    def __str__(self):
+        data = json.dumps(self.error_user)
+        json_data = json.loads(data)
+        with open('groups_error.json', 'w', encoding='utf8') as outfile:
+            json.dump(json_data, outfile, sort_keys=True, indent=4, ensure_ascii=False)
+        filename = os.path.join(self.dirname, 'groups_error.json')
+        return f'Группы на запросы к которым возвращена ошибка выгружены в файл: {filename}'
 
 
 if __name__ == "__main__":
     try:
-        userint = UserVk(get_user_input())
-        result = userint.create_dict_groups(userint.filter_groups(userint.counting_friends(), 50))
-        with open(os.path.abspath(os.path.join(os.path.dirname(__file__), 'groups.json')), 'w') as output_file:
-            json.dump(result, output_file, ensure_ascii=False, indent=2)
+        user = UserVk(get_user_input())
+        print(f'результат в файле {user.info_groups_rez()}')
+        print(user)
+        # print(user.transform_friends(user.get_friends_list()))
     except IndexError:
         pass
